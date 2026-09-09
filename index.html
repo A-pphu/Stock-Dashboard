@@ -55,6 +55,11 @@
   </div>
 </div>
 
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+  <div style="font-size:11px; color:var(--sub);" id="lastUpdated">–</div>
+  <button id="refreshBtn" style="background:transparent; color:var(--sub); border:1px solid var(--border); border-radius:8px; padding:4px 10px; font-size:11px; cursor:pointer;">↻ รีเฟรชตอนนี้</button>
+</div>
+
 <div class="chips" id="tickerChips"></div>
 
 <div class="stats" id="statsRow"></div>
@@ -315,6 +320,25 @@ async function loadAndRender() {
     },
   });
 }
+
+function updateTimestamp() {
+  const now = new Date();
+  document.getElementById("lastUpdated").textContent =
+    "อัปเดตล่าสุด: " + now.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+const originalLoadAndRender = loadAndRender;
+loadAndRender = async function () {
+  await originalLoadAndRender();
+  updateTimestamp();
+};
+
+document.getElementById("refreshBtn").addEventListener("click", () => loadAndRender());
+
+// Auto-refresh every 5 minutes — matches Yahoo Finance's own delay,
+// so refreshing more often than this won't surface newer data anyway.
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
+setInterval(() => loadAndRender(), AUTO_REFRESH_MS);
 
 loadAndRender();
 </script>
