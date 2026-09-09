@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Stock Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:#0B1220; --panel:#111A2C; --border:#1F2C45; --grid:#1A2540;
+    --text:#E7ECF5; --sub:#7C8AA8; --amber:#E3A857; --teal:#4FB8B0;
+    --up:#3FBF6F; --down:#E0556F; --violet:#8B7FD1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:'Inter', -apple-system, sans-serif; padding:16px 12px 32px;
+  }
+  .header { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+  .name { font-size:12px; color:var(--sub); }
+  .symbol { font-size:20px; font-weight:700; }
+  .price { font-size:24px; font-weight:700; font-family:ui-monospace, Menlo, monospace; text-align:right; }
+  .change { font-size:13px; font-weight:600; text-align:right; }
+  .up { color:var(--up); } .down { color:var(--down); }
+  .chips { display:flex; gap:6px; overflow-x:auto; padding-bottom:10px; margin-bottom:8px; }
+  .chip {
+    background:transparent; color:var(--sub); border:1px solid var(--border);
+    border-radius:999px; padding:5px 12px; font-size:12px; font-weight:600;
+    cursor:pointer; white-space:nowrap;
+  }
+  .chip.active { background:var(--amber); color:#1A1200; border-color:var(--amber); }
+  .stats { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+  .stat { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:10px 14px; flex:1 1 0; min-width:90px; }
+  .stat .label { font-size:11px; color:var(--sub); margin-bottom:4px; }
+  .stat .value { font-size:18px; font-family:ui-monospace, Menlo, monospace; font-weight:600; }
+  .stat .sub { font-size:11px; color:var(--sub); margin-top:2px; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:10px; margin-bottom:10px; }
+  .panel-title { font-size:11px; color:var(--sub); padding:0 4px 6px; }
+  canvas { max-width:100%; }
+  .loading, .error { text-align:center; color:var(--sub); padding:24px; font-size:13px; }
+  .error { color:var(--down); }
+  .footnote { font-size:10.5px; color:var(--sub); margin-top:14px; line-height:1.5; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="symbol" id="symbolLabel">–</div>
+    <div class="name" id="nameLabel">กำลังโหลด…</div>
+  </div>
+  <div>
+    <div class="price" id="priceLabel">–</div>
+    <div class="change" id="changeLabel">–</div>
+  </div>
+</div>
+
+<div class="chips" id="tickerChips"></div>
+
+<div class="stats" id="statsRow"></div>
+
+<div class="panel">
+  <div class="panel-title">PRICE + SMA 20/50 + Bollinger Bands</div>
+  <div id="priceStatus"></div>
+  <canvas id="priceChart" height="230"></canvas>
+</div>
+
+<div class="panel">
+  <div class="panel-title">VOLUME</div>
+  <canvas id="volumeChart" height="70"></canvas>
+</div>
+
+<div class="panel">
+  <div class="panel-title">RSI (14)</div>
+  <canvas id="rsiChart" height="90"></canvas>
+</div>
+
+<div class="panel">
+  <div class="panel-title">MACD (12,26,9)</div>
+  <canvas id="macdChart" height="90"></canvas>
+</div>
+
+<div class="footnote">
+  ข้อมูลราคาดึงจาก Yahoo Finance ผ่าน backend /api/quote (ดีเลย์ตามที่ Yahoo ให้มา ไม่ใช่ real-time แบบ tick-by-tick)
+  หุ้นไทยใช้สัญลักษณ์ต่อท้าย ".BK" เช่น ADVANC.BK
+</div>
+
+<script>
+// ---------- ticker list: display symbol -> Yahoo symbol ----------
+const TICKERS = [
+  { label: "ADVANC", yahoo: "ADVANC.BK" },
+  { label: "GULF",   yahoo: "GULF.BK" },
+  { label: "TISCO",  yahoo: "TISCO.BK" },
+  { label: "SCB",    yahoo: "SCB.BK" },
+  { label: "RKLB",   yahoo: "RKLB" },
+  { label: "GOOGL",  yahoo: "GOOGL" },
+  { label: "AMZN",   yahoo: "AMZN" },
+];
+
+let current = TICKERS[0];
+let charts = {};
+
+// ---------- indicator math (same formulas as the demo dashboard) ----------
+function sma(vals, period) {
+  const out = new Array(vals.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < vals.length; i++) {
+    sum += vals[i];
+    if (i >= period) sum -= vals[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
+}
+function ema(vals, period) {
+  const out = new Array(vals.length).fill(null);
+  const k = 2 / (period + 1);
+  let prev = null;
+  for (let i = 0; i < vals.length; i++) {
+    if (i === period - 1) {
+      prev = vals.slice(0, period).reduce((a, b) => a + b, 0) / period;
+      out[i] = prev;
+    } else if (i >= period) {
+      prev = vals[i] * k + prev * (1 - k);
+      out[i] = prev;
+    }
+  }
+  return out;
+}
+function rsi(vals, period = 14) {
+  const out = new Array(vals.length).fill(null);
+  let gain = 0, loss = 0;
+  for (let i = 1; i < vals.length; i++) {
+    const diff = vals[i] - vals[i - 1];
+    const g = Math.max(diff, 0), l = Math.max(-diff, 0);
+    if (i <= period) {
+      gain += g; loss += l;
+      if (i === period) {
+        const rs = (gain / period) / ((loss / period) || 1e-9);
+        out[i] = 100 - 100 / (1 + rs);
+      }
+    } else {
+      gain = (gain * (period - 1) + g) / period;
+      loss = (loss * (period - 1) + l) / period;
+      const rs = gain / (loss || 1e-9);
+      out[i] = 100 - 100 / (1 + rs);
+    }
+  }
+  return out;
+}
+function bollinger(vals, period = 20, mult = 2) {
+  const mid = sma(vals, period);
+  const upper = new Array(vals.length).fill(null);
+  const lower = new Array(vals.length).fill(null);
+  for (let i = 0; i < vals.length; i++) {
+    if (mid[i] == null) continue;
+    const slice = vals.slice(i - period + 1, i + 1);
+    const mean = mid[i];
+    const variance = slice.reduce((a, v) => a + (v - mean) ** 2, 0) / period;
+    upper[i] = mean + mult * Math.sqrt(variance);
+    lower[i] = mean - mult * Math.sqrt(variance);
+  }
+  return { upper, lower, mid };
+}
+
+function fmt(n, cur) {
+  if (n == null || isNaN(n)) return "–";
+  return (cur === "THB" ? "฿" : "$") + n.toFixed(2);
+}
+
+// ---------- rendering ----------
+function renderChips() {
+  const el = document.getElementById("tickerChips");
+  el.innerHTML = "";
+  TICKERS.forEach((t) => {
+    const btn = document.createElement("button");
+    btn.className = "chip" + (t.label === current.label ? " active" : "");
+    btn.textContent = t.label;
+    btn.onclick = () => { current = t; loadAndRender(); };
+    el.appendChild(btn);
+  });
+}
+
+function destroyCharts() {
+  Object.values(charts).forEach((c) => c && c.destroy());
+  charts = {};
+}
+
+async function loadAndRender() {
+  renderChips();
+  document.getElementById("priceStatus").innerHTML = '<div class="loading">กำลังโหลดข้อมูล…</div>';
+  destroyCharts();
+
+  let payload;
+  try {
+    const r = await fetch(`/api/quote?symbol=${encodeURIComponent(current.yahoo)}`);
+    payload = await r.json();
+    if (!r.ok || payload.error) throw new Error(payload.error || "โหลดข้อมูลไม่สำเร็จ");
+  } catch (err) {
+    document.getElementById("priceStatus").innerHTML =
+      `<div class="error">ดึงข้อมูลไม่สำเร็จ: ${err.message}</div>`;
+    return;
+  }
+  document.getElementById("priceStatus").innerHTML = "";
+
+  const rows = payload.rows;
+  const closes = rows.map((r) => r.close);
+  const sma20 = sma(closes, 20);
+  const sma50 = sma(closes, 50);
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const macdLine = closes.map((_, i) => (ema12[i] != null && ema26[i] != null) ? ema12[i] - ema26[i] : null);
+  const macdVals = macdLine.filter((v) => v != null);
+  const signalRaw = ema(macdVals, 9);
+  const signal = new Array(macdLine.length).fill(null);
+  { let j = 0; for (let i = 0; i < macdLine.length; i++) if (macdLine[i] != null) { signal[i] = signalRaw[j]; j++; } }
+  const hist = macdLine.map((v, i) => (v != null && signal[i] != null) ? v - signal[i] : null);
+  const rsi14 = rsi(closes, 14);
+  const bb = bollinger(closes, 20, 2);
+
+  const last = rows[rows.length - 1];
+  const prev = rows[rows.length - 2] || last;
+  const change = last.close - prev.close;
+  const changePct = (change / prev.close) * 100;
+  const isUp = change >= 0;
+  const last60 = rows.slice(-60);
+  const high60 = Math.max(...last60.map((r) => r.high));
+  const low60 = Math.min(...last60.map((r) => r.low));
+
+  document.getElementById("symbolLabel").textContent = current.label;
+  document.getElementById("nameLabel").textContent = payload.name;
+  document.getElementById("priceLabel").textContent = fmt(last.close, payload.currency);
+  const chEl = document.getElementById("changeLabel");
+  chEl.textContent = `${isUp ? "▲" : "▼"} ${Math.abs(change).toFixed(2)} (${changePct.toFixed(2)}%)`;
+  chEl.className = "change " + (isUp ? "up" : "down");
+
+  const lastRsi = rsi14[rsi14.length - 1];
+  document.getElementById("statsRow").innerHTML = `
+    <div class="stat"><div class="label">60D HIGH</div><div class="value">${fmt(high60, payload.currency)}</div></div>
+    <div class="stat"><div class="label">60D LOW</div><div class="value">${fmt(low60, payload.currency)}</div></div>
+    <div class="stat"><div class="label">VOLUME</div><div class="value">${(last.volume / 1e6).toFixed(2)}M</div></div>
+    <div class="stat"><div class="label">RSI (14)</div><div class="value" style="color:${lastRsi > 70 ? "var(--down)" : lastRsi < 30 ? "var(--up)" : "var(--text)"}">${lastRsi ? lastRsi.toFixed(1) : "–"}</div>
+      <div class="sub">${lastRsi > 70 ? "Overbought" : lastRsi < 30 ? "Oversold" : "Neutral"}</div></div>
+  `;
+
+  const labels = rows.map((r) => r.date.slice(5));
+  const gridColor = getComputedStyle(document.documentElement).getPropertyValue("--grid");
+  const subColor = getComputedStyle(document.documentElement).getPropertyValue("--sub");
+  const commonScales = {
+    x: { ticks: { color: subColor, maxTicksLimit: 6, font: { size: 10 } }, grid: { display: false } },
+  };
+
+  charts.price = new Chart(document.getElementById("priceChart"), {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        { label: "Close", data: closes, borderColor: "#E3A857", borderWidth: 2, pointRadius: 0 },
+        { label: "SMA20", data: sma20, borderColor: "#4FB8B0", borderWidth: 1.3, pointRadius: 0 },
+        { label: "SMA50", data: sma50, borderColor: "#E0556F", borderWidth: 1.3, pointRadius: 0 },
+        { label: "BB Upper", data: bb.upper, borderColor: "rgba(139,127,209,0.5)", borderWidth: 1, pointRadius: 0 },
+        { label: "BB Lower", data: bb.lower, borderColor: "rgba(139,127,209,0.5)", borderWidth: 1, pointRadius: 0 },
+      ],
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { color: "#E7ECF5", font: { size: 10 } } } },
+      scales: { ...commonScales, y: { ticks: { color: subColor, font: { size: 10 } }, grid: { color: gridColor } } },
+    },
+  });
+
+  charts.volume = new Chart(document.getElementById("volumeChart"), {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        data: rows.map((r) => r.volume),
+        backgroundColor: rows.map((r) => (r.close >= r.open ? "rgba(63,191,111,0.65)" : "rgba(224,85,111,0.65)")),
+      }],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: { x: { display: false }, y: { display: false } },
+    },
+  });
+
+  charts.rsi = new Chart(document.getElementById("rsiChart"), {
+    type: "line",
+    data: { labels, datasets: [{ label: "RSI", data: rsi14, borderColor: "#8B7FD1", borderWidth: 1.6, pointRadius: 0 }] },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: { min: 0, max: 100, ticks: { color: subColor, font: { size: 10 }, callback: (v) => [30, 50, 70].includes(v) ? v : "" }, grid: { color: gridColor } },
+      },
+    },
+  });
+
+  charts.macd = new Chart(document.getElementById("macdChart"), {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { type: "bar", label: "Hist", data: hist, backgroundColor: hist.map((v) => (v >= 0 ? "rgba(63,191,111,0.55)" : "rgba(224,85,111,0.55)")) },
+        { type: "line", label: "MACD", data: macdLine, borderColor: "#E3A857", borderWidth: 1.4, pointRadius: 0 },
+        { type: "line", label: "Signal", data: signal, borderColor: "#4FB8B0", borderWidth: 1.4, pointRadius: 0 },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: "#E7ECF5", font: { size: 10 } } } },
+      scales: { ...commonScales, y: { ticks: { color: subColor, font: { size: 10 } }, grid: { color: gridColor } } },
+    },
+  });
+}
+
+loadAndRender();
+</script>
+</body>
+</html>
